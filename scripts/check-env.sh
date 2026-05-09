@@ -1,20 +1,14 @@
 #!/usr/bin/env bash
 # scripts/check-env.sh — pre-flight wired into `predev` (npm convention).
 #
-# Validates, in order, that everything `npm run dev` needs is in place:
+# Validates that everything `npm run dev` needs is in place:
 #   1. Docker daemon up.
-#   2. npx is available so `@notionhq/notion-mcp-server` can be fetched
-#      on demand. We don't pull the package here (slow) — we just prove
-#      the resolver works.
-#   3. apps/agent/.env exists and has GEMINI_API_KEY, NOTION_TOKEN, and
-#      NOTION_LEADS_DATABASE_ID set to non-stub values.
-#   4. Notion is reachable AND the leads database is shared with the
-#      integration. Defers to `apps/agent/src/notion_tools.py --check`, which
-#      reports an actionable FAIL: with the share-gotcha fix on a 404.
+#   2. npx available.
+#   3. apps/agent/.env exists and has GEMINI_API_KEY set to a non-stub value.
+#   4. Optional: warns if GITHUB_TOKEN is missing (rate limit degraded, not fatal).
 #
 # Collects every problem into a numbered list rather than bailing on the
-# first failure, so participants can fix the whole batch in one pass.
-# Exit 0 silently on success.
+# first failure. Exit 0 silently on success.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -29,7 +23,7 @@ elif ! docker info >/dev/null 2>&1; then
   PROBLEMS+=("Docker isn't running. Start Docker Desktop and re-try.")
 fi
 
-# ---------- 2. npx (for the Notion MCP server) -------------------------------
+# ---------- 2. npx -----------------------------------------------------------
 if ! command -v npx >/dev/null 2>&1; then
   PROBLEMS+=("npx is not on PATH. Install Node.js 20+ (npm bundles npx).")
 fi
@@ -37,10 +31,8 @@ fi
 # ---------- 3. agent/.env vars -----------------------------------------------
 AGENT_ENV="$REPO_ROOT/apps/agent/.env"
 if [[ ! -f "$AGENT_ENV" ]]; then
-  PROBLEMS+=("apps/agent/.env is missing. Run: cp apps/agent/.env.example apps/agent/.env, then fill in the keys.")
+  PROBLEMS+=("apps/agent/.env is missing. Run: cp apps/agent/.env.example apps/agent/.env, then fill in GEMINI_API_KEY.")
 else
-  # Read VAR=VALUE lines. We tolerate values without quotes (the .env files
-  # ship without quotes) and strip surrounding whitespace.
   read_var() {
     local key="$1"
     grep -E "^[[:space:]]*${key}=" "$AGENT_ENV" | tail -n1 | sed -E "s/^[[:space:]]*${key}=//; s/^[\"']//; s/[\"'][[:space:]]*$//; s/[[:space:]]+$//"
@@ -53,35 +45,18 @@ else
     esac
     return 1
   }
-  for VAR in GEMINI_API_KEY NOTION_TOKEN NOTION_LEADS_DATABASE_ID; do
-    val="$(read_var "$VAR" || true)"
-    if is_stub "$val"; then
-      case "$VAR" in
-        GEMINI_API_KEY)
-          PROBLEMS+=("$VAR is unset (or a stub) in apps/agent/.env. Get a key at https://aistudio.google.com -> Get API key.")
-          ;;
-        NOTION_TOKEN)
-          PROBLEMS+=("$VAR is unset (or a stub) in apps/agent/.env. Get a token at https://notion.so/my-integrations -> New integration -> Internal Integration Token.")
-          ;;
-        NOTION_LEADS_DATABASE_ID)
-          PROBLEMS+=("$VAR is unset in apps/agent/.env. Paste the database id from your Notion database URL.")
-          ;;
-      esac
-    fi
-  done
-fi
 
-# ---------- 4. Notion reachable + database shared ---------------------------
-# Only run the live health check if the env vars passed (no point hitting the
-# network when we know auth will fail). The script prints OK: ... or FAIL: ...
-# with the share-gotcha fix on a 404.
-if [[ ${#PROBLEMS[@]} -eq 0 ]]; then
-  HEALTH_OUT="$(cd "$REPO_ROOT/apps/agent" && uv run python -m src.notion_tools --check 2>&1 || true)"
-  if ! grep -q "^OK: " <<<"$HEALTH_OUT"; then
-    # Pass the FAIL output through verbatim — the --check flag already
-    # formats the share-gotcha fix instructions when applicable.
-    PROBLEMS+=("Notion health check failed:
-$HEALTH_OUT")
+  gemini_val="$(read_var "GEMINI_API_KEY" || true)"
+  if is_stub "$gemini_val"; then
+    PROBLEMS+=("GEMINI_API_KEY is unset (or a stub) in apps/agent/.env. Get a key at https://aistudio.google.com -> Get API key.")
+  fi
+
+  # GITHUB_TOKEN is optional but important for rate limits — warn, don't fail.
+  github_val="$(read_var "GITHUB_TOKEN" || true)"
+  if is_stub "$github_val"; then
+    echo "  ⚠  GITHUB_TOKEN not set — GitHub API limited to 60 req/hr (unauthenticated)."
+    echo "     Set GITHUB_TOKEN in apps/agent/.env for 5000 req/hr."
+    echo ""
   fi
 fi
 
@@ -92,7 +67,6 @@ if [[ ${#PROBLEMS[@]} -gt 0 ]]; then
   echo ""
   i=1
   for p in "${PROBLEMS[@]}"; do
-    # Indent multi-line problems so they read as one item.
     first_line="${p%%$'\n'*}"
     rest="${p#*$'\n'}"
     echo "  $i. $first_line"

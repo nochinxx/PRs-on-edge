@@ -12,6 +12,7 @@ dependencies = [
     "langchain-core>=0.3.0",
     "copilotkit>=0.1.0",
     "mcp-use>=1.7.0",
+    "httpx>=0.27.0",
     "python-dotenv>=1.0.0",
     "jsonpatch>=1.33",
     "typing-extensions>=4.10.0",
