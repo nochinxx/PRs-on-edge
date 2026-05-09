@@ -34,15 +34,20 @@ const app = createCopilotEndpoint({
     agents: { default: agent },
     openGenerativeUI: true,
     a2ui: { injectA2UITool: false },
-    mcpApps: {
-      servers: [
-        {
-          type: "http",
-          url: process.env.MCP_SERVER_URL || "http://localhost:3001/mcp",
-          serverId: "manufact_local",
-        },
-      ],
-    },
+    // MCP server wired when MCP_SERVER_URL is set (run dev:full to start it)
+    ...(process.env.MCP_SERVER_URL
+      ? {
+          mcpApps: {
+            servers: [
+              {
+                type: "http" as const,
+                url: process.env.MCP_SERVER_URL,
+                serverId: "manufact_local",
+              },
+            ],
+          },
+        }
+      : {}),
   }),
 });
 

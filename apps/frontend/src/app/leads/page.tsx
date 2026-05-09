@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { motion } from "motion/react";
 import { z } from "zod";
 import { Toaster } from "sonner";
 import {
@@ -242,16 +243,259 @@ function PRCardInline({ number, title, author, risk_score }: {
   );
 }
 
+// ── View: Swipe ────────────────────────────────────────────────────────────────
+
+function SwipeView({
+  prs,
+  highlightedPRNumbers,
+  onSelect,
+}: {
+  prs: PR[];
+  highlightedPRNumbers: number[];
+  onSelect: (pr: PR) => void;
+}) {
+  const [index, setIndex] = useState(0);
+
+  useEffect(() => {
+    setIndex(0);
+  }, [prs.length]);
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (["ArrowRight", "ArrowDown", " ", "j"].includes(e.key)) {
+        e.preventDefault();
+        setIndex((i) => Math.min(i + 1, prs.length - 1));
+      } else if (["ArrowLeft", "ArrowUp", "k"].includes(e.key)) {
+        e.preventDefault();
+        setIndex((i) => Math.max(i - 1, 0));
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [prs.length]);
+
+  const safeIndex = Math.min(index, Math.max(0, prs.length - 1));
+  const pr = prs[safeIndex];
+  if (!pr) return null;
+
+  const score = pr.risk_score ?? 0;
+  const highlighted = highlightedPRNumbers.includes(pr.number);
+
+  return (
+    <div className="flex flex-1 flex-col items-center justify-center gap-5 overflow-hidden">
+      <p className="font-mono text-xs text-muted-foreground">
+        {safeIndex + 1} of {prs.length}
+      </p>
+      <motion.div
+        key={pr.number}
+        drag="x"
+        dragConstraints={{ left: 0, right: 0 }}
+        dragElastic={0.15}
+        onDragEnd={(_, info) => {
+          if (info.offset.x < -80 || info.velocity.x < -400) {
+            setIndex((i) => Math.min(i + 1, prs.length - 1));
+          } else if (info.offset.x > 80 || info.velocity.x > 400) {
+            setIndex((i) => Math.max(i - 1, 0));
+          }
+        }}
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.15, ease: "easeOut" }}
+        className={`w-full max-w-lg cursor-grab rounded-2xl border bg-card p-6 shadow-lg active:cursor-grabbing ${
+          highlighted ? "border-violet-400 ring-1 ring-violet-300" : "border-border"
+        }`}
+      >
+        <div className="mb-3 flex items-start justify-between gap-2">
+          <span className="font-mono text-xs text-muted-foreground">#{pr.number}</span>
+          <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${riskColor(score)}`}>
+            risk {score}
+          </span>
+        </div>
+        <h2 className="mb-3 text-lg font-semibold leading-snug">{pr.title}</h2>
+        {pr.body && (
+          <p className="mb-4 line-clamp-3 text-sm leading-relaxed text-muted-foreground">
+            {pr.body}
+          </p>
+        )}
+        <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+          <img
+            src={pr.author_avatar}
+            alt={pr.author}
+            className="size-5 rounded-full"
+            onError={(e) => ((e.target as HTMLImageElement).style.display = "none")}
+          />
+          <span className="font-medium text-foreground">{pr.author}</span>
+          {pr.draft && <span className="rounded bg-muted px-1 py-0.5 text-[10px]">draft</span>}
+          {pr.changed_files != null && <span>{pr.changed_files} files</span>}
+          {pr.updated_at && <span>{timeAgo(pr.updated_at)}</span>}
+        </div>
+        {(pr.labels ?? []).length > 0 && (
+          <div className="mb-4 flex flex-wrap gap-1">
+            {(pr.labels ?? []).map((l) => (
+              <span key={l} className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">
+                {l}
+              </span>
+            ))}
+          </div>
+        )}
+        <button onClick={() => onSelect(pr)} className="text-xs text-violet-600 hover:underline">
+          View details →
+        </button>
+      </motion.div>
+
+      <div className="flex gap-3">
+        <button
+          onClick={() => setIndex((i) => Math.max(i - 1, 0))}
+          disabled={safeIndex === 0}
+          className="rounded-lg border border-border bg-card px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-30"
+        >
+          ← Prev
+        </button>
+        <button
+          onClick={() => setIndex((i) => Math.min(i + 1, prs.length - 1))}
+          disabled={safeIndex === prs.length - 1}
+          className="rounded-lg border border-border bg-card px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-30"
+        >
+          Next →
+        </button>
+      </div>
+      <p className="text-[11px] text-muted-foreground/50">drag or use arrow keys to navigate</p>
+    </div>
+  );
+}
+
+// ── View: Risk Matrix ──────────────────────────────────────────────────────────
+
+function RiskMatrixView({
+  prs,
+  highlightedPRNumbers,
+  onSelect,
+}: {
+  prs: PR[];
+  highlightedPRNumbers: number[];
+  onSelect: (pr: PR) => void;
+}) {
+  const high = prs.filter((p) => (p.risk_score ?? 0) >= 70);
+  const med = prs.filter((p) => (p.risk_score ?? 0) >= 40 && (p.risk_score ?? 0) < 70);
+  const low = prs.filter((p) => (p.risk_score ?? 0) < 40);
+
+  const columns = [
+    { label: "High", items: high, header: "bg-red-50 text-red-700 border-red-200", dot: "bg-red-400" },
+    { label: "Medium", items: med, header: "bg-amber-50 text-amber-700 border-amber-200", dot: "bg-amber-400" },
+    { label: "Low", items: low, header: "bg-green-50 text-green-700 border-green-200", dot: "bg-green-400" },
+  ];
+
+  return (
+    <div className="flex min-h-0 flex-1 gap-3 overflow-hidden">
+      {columns.map(({ label, items, header, dot }) => (
+        <div key={label} className="flex min-h-0 flex-1 flex-col gap-2">
+          <div className={`flex shrink-0 items-center gap-2 rounded-lg border px-3 py-2 ${header}`}>
+            <div className={`size-2 rounded-full ${dot}`} />
+            <span className="text-sm font-semibold">{label}</span>
+            <span className="ml-auto font-mono text-xs opacity-60">{items.length}</span>
+          </div>
+          <div className="flex flex-col gap-1.5 overflow-y-auto">
+            {items.length === 0 && (
+              <p className="py-4 text-center text-xs text-muted-foreground/50">None</p>
+            )}
+            {items.map((pr) => {
+              const score = pr.risk_score ?? 0;
+              const highlighted = highlightedPRNumbers.includes(pr.number);
+              return (
+                <button
+                  key={pr.number}
+                  onClick={() => onSelect(pr)}
+                  className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-left text-xs transition-all hover:shadow-sm ${
+                    highlighted
+                      ? "border-violet-400 bg-violet-50 ring-1 ring-violet-300"
+                      : "border-border bg-card hover:border-muted"
+                  }`}
+                >
+                  <span className="shrink-0 font-mono text-[10px] text-muted-foreground">#{pr.number}</span>
+                  <span className="min-w-0 flex-1 truncate font-medium">{pr.title}</span>
+                  <span className={`shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] font-semibold ${riskColor(score)}`}>
+                    {score}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── View: Contributor Focus ────────────────────────────────────────────────────
+
+function ContributorFocusView({
+  prs,
+  highlightedPRNumbers,
+  onSelect,
+}: {
+  prs: PR[];
+  highlightedPRNumbers: number[];
+  onSelect: (pr: PR) => void;
+}) {
+  const groups = useMemo(() => {
+    const map = new Map<string, { author: string; avatar?: string; prs: PR[] }>();
+    for (const pr of prs) {
+      if (!map.has(pr.author)) {
+        map.set(pr.author, { author: pr.author, avatar: pr.author_avatar, prs: [] });
+      }
+      map.get(pr.author)!.prs.push(pr);
+    }
+    return [...map.values()].sort((a, b) => b.prs.length - a.prs.length);
+  }, [prs]);
+
+  return (
+    <div className="flex-1 overflow-y-auto">
+      <div className="flex flex-col gap-8">
+        {groups.map((group) => (
+          <div key={group.author}>
+            <div className="mb-3 flex items-center gap-3">
+              {group.avatar ? (
+                <img
+                  src={group.avatar}
+                  alt={group.author}
+                  className="size-8 rounded-full"
+                  onError={(e) => ((e.target as HTMLImageElement).style.display = "none")}
+                />
+              ) : (
+                <div className="flex size-8 items-center justify-center rounded-full bg-muted text-xs font-bold text-muted-foreground">
+                  {group.author[0]?.toUpperCase()}
+                </div>
+              )}
+              <span className="text-sm font-semibold">{group.author}</span>
+              <span className="rounded-full bg-muted px-2 py-0.5 font-mono text-[10px] text-muted-foreground">
+                {group.prs.length} PR{group.prs.length !== 1 ? "s" : ""}
+              </span>
+            </div>
+            <div className="grid gap-2 pl-11 sm:grid-cols-2 lg:grid-cols-3">
+              {group.prs.map((pr) => (
+                <PRCardTile
+                  key={pr.number}
+                  pr={pr}
+                  highlighted={highlightedPRNumbers.includes(pr.number)}
+                  onSelect={onSelect}
+                />
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ── Main canvas ────────────────────────────────────────────────────────────
 
 function CanvasInner() {
   const { agent } = useAgent();
 
-  function useLiveState() {
-    return useMemo(() => mergeAgentState(agent?.state), [agent?.state]);
-  }
-
-  const state = useLiveState();
+  // Don't memoize — agent.state is mutated in place, so useMemo([agent?.state])
+  // won't re-trigger. useAgent() re-renders on OnStateChanged; re-merge each time.
+  const state = mergeAgentState(agent?.state);
 
   const updateState = useCallback(
     (updater: (prev: AgentState) => AgentState) => {
@@ -384,13 +628,41 @@ function CanvasInner() {
     [state.prs],
   );
 
+  const handleSelect = useCallback(
+    (p: PR) =>
+      updateState((prev) => ({
+        ...prev,
+        selectedPR: prev.selectedPR?.number === p.number ? null : p,
+      })),
+    [updateState],
+  );
+
   return (
     <>
       <main className="flex h-screen flex-col gap-4 overflow-hidden bg-background px-6 py-6">
         {/* Header */}
-        <div className="flex items-baseline gap-3">
-          <h1 className="text-lg font-semibold">{state.header.title}</h1>
-          <span className="text-sm text-muted-foreground">{state.header.subtitle}</span>
+        <div className="flex items-center gap-3">
+          <div className="flex items-baseline gap-3 flex-1">
+            <h1 className="text-lg font-semibold">{state.header.title}</h1>
+            <span className="text-sm text-muted-foreground">{state.header.subtitle}</span>
+          </div>
+          {state.prs.length > 0 && (
+            <div className="flex items-center gap-1 rounded-lg border border-border bg-muted/40 p-1">
+              {(["swipe", "risk-matrix", "contributor-focus"] as const).map((v) => (
+                <button
+                  key={v}
+                  onClick={() => updateState((prev) => ({ ...prev, view: v }))}
+                  className={`rounded px-2.5 py-1 text-[11px] font-medium transition-colors ${
+                    state.view === v
+                      ? "bg-background shadow-sm text-foreground"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {v}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Empty state */}
@@ -407,26 +679,28 @@ function CanvasInner() {
           </div>
         ) : (
           <div className="flex min-h-0 flex-1 gap-4 overflow-hidden">
-            {/* PR grid */}
-            <div className="flex-1 overflow-y-auto">
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                {sortedPRs.map((pr) => (
-                  <PRCardTile
-                    key={pr.number}
-                    pr={pr}
-                    highlighted={state.highlightedPRNumbers.includes(pr.number)}
-                    onSelect={(p) =>
-                      updateState((prev) => ({
-                        ...prev,
-                        selectedPR: prev.selectedPR?.number === p.number ? null : p,
-                      }))
-                    }
-                  />
-                ))}
-              </div>
-            </div>
+            {state.view === "swipe" && (
+              <SwipeView
+                prs={sortedPRs}
+                highlightedPRNumbers={state.highlightedPRNumbers}
+                onSelect={handleSelect}
+              />
+            )}
+            {state.view === "risk-matrix" && (
+              <RiskMatrixView
+                prs={sortedPRs}
+                highlightedPRNumbers={state.highlightedPRNumbers}
+                onSelect={handleSelect}
+              />
+            )}
+            {state.view === "contributor-focus" && (
+              <ContributorFocusView
+                prs={sortedPRs}
+                highlightedPRNumbers={state.highlightedPRNumbers}
+                onSelect={handleSelect}
+              />
+            )}
 
-            {/* Detail panel */}
             {state.selectedPR && (
               <div className="w-80 shrink-0">
                 <PRDetailPanel
