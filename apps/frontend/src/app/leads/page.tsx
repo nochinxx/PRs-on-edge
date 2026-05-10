@@ -40,7 +40,7 @@ type AgentState = {
   prs: PR[];
   repo: Repo | null;
   selectedPR: (PR & { files?: unknown[]; additions?: number; deletions?: number }) | null;
-  view: "swipe" | "risk-matrix" | "contributor-focus" | "dependency-graph";
+  view: "swipe" | "risk-matrix" | "contributor-focus" | "dependency-graph" | "category-group";
   header: { title: string; subtitle: string };
   highlightedPRNumbers: number[];
 };
@@ -655,9 +655,143 @@ function ContributorFocusView({
   );
 }
 
+// ── View: Category Group ──────────────────────────────────────────────────────
+
+const CATEGORY_ORDER = [
+  "Security", "Breaking", "Bug Fix", "Feature",
+  "Refactor", "Testing", "Maintenance", "CI/CD", "Docs", "Other",
+];
+
+const CATEGORY_STYLE: Record<string, { dot: string; header: string }> = {
+  Security:    { dot: "bg-red-600",    header: "bg-red-50 text-red-800 border-red-200" },
+  Breaking:    { dot: "bg-orange-500", header: "bg-orange-50 text-orange-800 border-orange-200" },
+  "Bug Fix":   { dot: "bg-red-400",    header: "bg-red-50 text-red-700 border-red-200" },
+  Feature:     { dot: "bg-blue-500",   header: "bg-blue-50 text-blue-700 border-blue-200" },
+  Refactor:    { dot: "bg-purple-500", header: "bg-purple-50 text-purple-700 border-purple-200" },
+  Testing:     { dot: "bg-cyan-500",   header: "bg-cyan-50 text-cyan-700 border-cyan-200" },
+  Maintenance: { dot: "bg-slate-400",  header: "bg-slate-50 text-slate-700 border-slate-200" },
+  "CI/CD":     { dot: "bg-indigo-500", header: "bg-indigo-50 text-indigo-700 border-indigo-200" },
+  Docs:        { dot: "bg-green-500",  header: "bg-green-50 text-green-700 border-green-200" },
+  Other:       { dot: "bg-gray-400",   header: "bg-gray-50 text-gray-600 border-gray-200" },
+};
+
+function inferCategory(pr: PR): string {
+  const labels = (pr.labels ?? []).map((l) => l.toLowerCase()).join(" ");
+  const title = (pr.title ?? "").toLowerCase();
+
+  if (/security|auth|vuln|cve|exploit/.test(labels) || /^security:|^auth:/.test(title)) return "Security";
+  if (/breaking/.test(labels) || /breaking.?change|^break/.test(title)) return "Breaking";
+  if (/^bug$|^bug\s|hotfix/.test(labels) || /^fix(\(|:|\s)|^bug(\(|:|\s)/.test(title)) return "Bug Fix";
+  if (/feature|enhancement/.test(labels) || /^feat(\(|:|\s)|^add(\(|:|\s)|^new(\(|:|\s)/.test(title)) return "Feature";
+  if (/refactor/.test(labels) || /^refactor(\(|:|\s)|^cleanup(\(|:|\s)/.test(title)) return "Refactor";
+  if (/test/.test(labels) || /^test(\(|:|\s)/.test(title)) return "Testing";
+  if (/ci\b|cd\b|deploy|build|workflow|action/.test(labels) || /^ci(\(|:|\s)|^build(\(|:|\s)/.test(title)) return "CI/CD";
+  if (/doc|readme/.test(labels) || /^docs?(\(|:|\s)/.test(title)) return "Docs";
+  if (/deps|depend|chore|maint|bump|upgrade/.test(labels) || /^chore(\(|:|\s)|^deps(\(|:|\s)|^bump(\(|:|\s)/.test(title)) return "Maintenance";
+
+  return "Other";
+}
+
+function CategoryGroupView({
+  prs,
+  highlightedPRNumbers,
+  onSelect,
+}: {
+  prs: PR[];
+  highlightedPRNumbers: number[];
+  onSelect: (pr: PR) => void;
+}) {
+  const groups = useMemo(() => {
+    const map = new Map<string, PR[]>();
+    for (const pr of prs) {
+      const cat = inferCategory(pr);
+      if (!map.has(cat)) map.set(cat, []);
+      map.get(cat)!.push(pr);
+    }
+    const ordered = CATEGORY_ORDER.filter((k) => map.has(k)).map((k) => ({
+      category: k,
+      prs: map.get(k)!,
+    }));
+    // any categories not in the fixed order list
+    const extra = [...map.entries()]
+      .filter(([k]) => !CATEGORY_ORDER.includes(k))
+      .map(([k, v]) => ({ category: k, prs: v }));
+    return [...ordered, ...extra];
+  }, [prs]);
+
+  return (
+    <div className="flex-1 overflow-y-auto">
+      <div className="flex flex-col gap-6">
+        {groups.map(({ category, prs: groupPRs }) => {
+          const style = CATEGORY_STYLE[category] ?? CATEGORY_STYLE.Other;
+          return (
+            <div key={category}>
+              <div
+                className={`mb-3 flex items-center gap-2 rounded-lg border px-3 py-2 ${style.header}`}
+              >
+                <div className={`size-2 rounded-full ${style.dot}`} />
+                <span className="text-sm font-semibold">{category}</span>
+                <span className="ml-auto font-mono text-xs opacity-60">{groupPRs.length}</span>
+              </div>
+              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                {groupPRs.map((pr) => (
+                  <PRCardTile
+                    key={pr.number}
+                    pr={pr}
+                    highlighted={highlightedPRNumbers.includes(pr.number)}
+                    onSelect={onSelect}
+                  />
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // ── View: Dependency Graph ────────────────────────────────────────────────────
-// Bipartite SVG: author hubs (large circles) → PR satellites (small circles).
-// Edges = same-author ownership. Node color = risk tier.
+// Parses #N references from PR bodies to build a directed DAG.
+// Layout: Sugiyama-style layers — PRs with no deps on left, dependents rightward.
+// Solid arrow = explicit keyword ("depends on / blocked by / requires #N").
+// Dashed edge = bare #N mention (weaker signal).
+// Independent PRs shown as compact chips below the graph.
+
+const NW = 148; // node width
+const NH = 58;  // node height
+const CG = 96;  // column gap
+const RG = 16;  // row gap
+const PAD = 24;
+
+function parsePRDeps(pr: PR, allNums: Set<number>): { hard: number[]; soft: number[] } {
+  const text = `${pr.title ?? ""} ${pr.body ?? ""}`;
+  const hard = new Set<number>();
+  const soft = new Set<number>();
+
+  // Explicit dependency keywords → hard edges
+  const hardRe = /(?:depends?\s+on|blocked?\s+by|requires?|needs?|stacked?\s+on|after|part\s+of)\s+#(\d+)/gi;
+  let m: RegExpExecArray | null;
+  while ((m = hardRe.exec(text)) !== null) {
+    const n = parseInt(m[1]);
+    if (allNums.has(n) && n !== pr.number) hard.add(n);
+  }
+
+  // Bare #N mention → soft edges (skip ones already captured as hard)
+  const softRe = /#(\d+)/g;
+  while ((m = softRe.exec(text)) !== null) {
+    const n = parseInt(m[1]);
+    if (allNums.has(n) && n !== pr.number && !hard.has(n)) soft.add(n);
+  }
+
+  return { hard: [...hard], soft: [...soft] };
+}
+
+function nodeRiskStyle(score: number) {
+  if (score >= 70) return { fill: "#fef2f2", stroke: "#dc2626" };
+  if (score >= 40) return { fill: "#fffbeb", stroke: "#d97706" };
+  return { fill: "#f0fdf4", stroke: "#16a34a" };
+}
 
 function DependencyGraphView({
   prs,
@@ -668,143 +802,252 @@ function DependencyGraphView({
   highlightedPRNumbers: number[];
   onSelect: (pr: PR) => void;
 }) {
-  const W = 700;
-  const H = 520;
+  const allNums = useMemo(() => new Set(prs.map((p) => p.number)), [prs]);
 
-  const groups = useMemo(() => {
-    const map = new Map<string, { author: string; avatar?: string; prs: PR[] }>();
-    for (const pr of prs) {
-      if (!map.has(pr.author)) {
-        map.set(pr.author, { author: pr.author, avatar: pr.author_avatar, prs: [] });
+  // deps[N] = { hard: [...], soft: [...] } — numbers that N depends on
+  const deps = useMemo(() => {
+    const map = new Map<number, { hard: number[]; soft: number[] }>();
+    for (const pr of prs) map.set(pr.number, parsePRDeps(pr, allNums));
+    return map;
+  }, [prs, allNums]);
+
+  // reverseDeps[N] = set of nodes that depend on N (for topo sort)
+  const reverseDeps = useMemo(() => {
+    const map = new Map<number, Set<number>>();
+    for (const pr of prs) map.set(pr.number, new Set());
+    for (const [num, { hard, soft }] of deps) {
+      for (const dep of [...hard, ...soft]) {
+        map.get(dep)?.add(num);
       }
-      map.get(pr.author)!.prs.push(pr);
     }
-    return [...map.values()].sort((a, b) => b.prs.length - a.prs.length);
-  }, [prs]);
+    return map;
+  }, [deps, prs]);
 
-  // Position author hubs evenly around a center ellipse
-  const hubPositions = groups.map((g, i) => {
-    const angle = (i / groups.length) * 2 * Math.PI - Math.PI / 2;
-    return {
-      author: g.author,
-      x: W / 2 + (W * 0.32) * Math.cos(angle),
-      y: H / 2 + (H * 0.34) * Math.sin(angle),
-    };
-  });
+  // Kahn's topological layering: layer 0 = nodes with no outgoing deps (can merge immediately)
+  const { layers, layerOf } = useMemo(() => {
+    const inDeg = new Map<number, number>();
+    for (const pr of prs) {
+      const { hard, soft } = deps.get(pr.number) ?? { hard: [], soft: [] };
+      inDeg.set(pr.number, hard.length + soft.length);
+    }
+    const layers: number[][] = [];
+    const layerOf = new Map<number, number>();
+    let queue = prs.filter((p) => (inDeg.get(p.number) ?? 0) === 0).map((p) => p.number);
+    const visited = new Set<number>();
+    while (queue.length > 0) {
+      const li = layers.length;
+      layers.push([...queue]);
+      for (const n of queue) { visited.add(n); layerOf.set(n, li); }
+      const next: number[] = [];
+      for (const node of queue) {
+        for (const dep of reverseDeps.get(node) ?? []) {
+          if (!visited.has(dep)) {
+            const nd = (inDeg.get(dep) ?? 1) - 1;
+            inDeg.set(dep, nd);
+            if (nd === 0) next.push(dep);
+          }
+        }
+      }
+      queue = next;
+    }
+    // anything left (cycles) goes in a final layer
+    const remaining = prs.filter((p) => !visited.has(p.number)).map((p) => p.number);
+    if (remaining.length) { layers.push(remaining); remaining.forEach((n) => layerOf.set(n, layers.length - 1)); }
+    return { layers, layerOf };
+  }, [prs, deps, reverseDeps]);
 
-  // Position each PR satellite around its hub
-  const prPositions: { pr: PR; x: number; y: number }[] = [];
-  groups.forEach((g, gi) => {
-    const hub = hubPositions[gi];
-    g.prs.forEach((pr, pi) => {
-      const spread = Math.min(g.prs.length, 6);
-      const angle = (pi / spread) * 2 * Math.PI - Math.PI / 2;
-      const r = 60 + Math.min(g.prs.length, 4) * 8;
-      prPositions.push({
-        pr,
-        x: hub.x + r * Math.cos(angle),
-        y: hub.y + r * Math.sin(angle),
+  // Nodes that have at least one edge
+  const connected = useMemo(() => {
+    const s = new Set<number>();
+    for (const [num, { hard, soft }] of deps) {
+      if (hard.length + soft.length > 0) { s.add(num); for (const n of [...hard, ...soft]) s.add(n); }
+    }
+    return s;
+  }, [deps]);
+
+  const independent = useMemo(
+    () => prs.filter((p) => !connected.has(p.number)),
+    [prs, connected],
+  );
+  const graphPRs = useMemo(
+    () => prs.filter((p) => connected.has(p.number)),
+    [prs, connected],
+  );
+
+  // Compute positions only for connected PRs, rebucketed by layer
+  const positions = useMemo(() => {
+    const map = new Map<number, { x: number; y: number }>();
+    // Re-layer only connected nodes
+    const connectedLayers: number[][] = layers.map((l) => l.filter((n) => connected.has(n))).filter((l) => l.length > 0);
+    connectedLayers.forEach((layer, li) => {
+      layer.forEach((num, ni) => {
+        map.set(num, {
+          x: PAD + li * (NW + CG),
+          y: PAD + ni * (NH + RG),
+        });
       });
     });
-  });
+    return map;
+  }, [layers, connected]);
 
-  const hubMap = new Map(hubPositions.map((h) => [h.author, h]));
+  const svgW = Math.max(layers.filter((l) => l.some((n) => connected.has(n))).length, 1) * (NW + CG) - CG + PAD * 2;
+  const maxConnectedLayerSize = Math.max(...layers.map((l) => l.filter((n) => connected.has(n)).length), 1);
+  const svgH = Math.max(maxConnectedLayerSize * (NH + RG) - RG + PAD * 2, NH + PAD * 2);
 
-  function nodeColor(score: number) {
-    if (score >= 70) return { fill: "#fecaca", stroke: "#dc2626" };
-    if (score >= 40) return { fill: "#fef3c7", stroke: "#d97706" };
-    return { fill: "#dcfce7", stroke: "#16a34a" };
-  }
+  // All directed edges among connected nodes
+  const edges = useMemo(() => {
+    const result: { from: number; to: number; kind: "hard" | "soft" }[] = [];
+    for (const [num, { hard, soft }] of deps) {
+      if (!connected.has(num)) continue;
+      for (const dep of hard) if (connected.has(dep)) result.push({ from: num, to: dep, kind: "hard" });
+      for (const dep of soft) if (connected.has(dep)) result.push({ from: num, to: dep, kind: "soft" });
+    }
+    return result;
+  }, [deps, connected]);
+
+  const hardCount = edges.filter((e) => e.kind === "hard").length;
+  const softCount = edges.filter((e) => e.kind === "soft").length;
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-hidden">
-      <p className="shrink-0 font-mono text-[11px] text-muted-foreground/60">
-        Author → PR graph · node color = risk · click a PR to inspect
-      </p>
-      <div className="flex-1 overflow-auto rounded-xl border border-border bg-card">
-        <svg
-          viewBox={`0 0 ${W} ${H}`}
-          width="100%"
-          style={{ minHeight: 360 }}
-          className="block"
-        >
-          {/* Edges: hub → satellite */}
-          {prPositions.map(({ pr, x, y }) => {
-            const hub = hubMap.get(pr.author);
-            if (!hub) return null;
-            return (
-              <line
-                key={`edge-${pr.number}`}
-                x1={hub.x} y1={hub.y} x2={x} y2={y}
-                stroke="#e2e8f0" strokeWidth={1.5}
-              />
-            );
-          })}
+    <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden">
+      {/* Legend */}
+      <div className="flex shrink-0 flex-wrap items-center gap-4 font-mono text-[11px] text-muted-foreground/70">
+        {hardCount > 0 && (
+          <span className="flex items-center gap-1.5">
+            <svg width="24" height="8"><line x1="0" y1="4" x2="20" y2="4" stroke="#64748b" strokeWidth="1.5" markerEnd="url(#ah-preview)" /><defs><marker id="ah-preview" markerWidth="6" markerHeight="5" refX="5" refY="2.5" orient="auto"><polygon points="0 0,6 2.5,0 5" fill="#64748b" /></marker></defs></svg>
+            depends on ({hardCount})
+          </span>
+        )}
+        {softCount > 0 && (
+          <span className="flex items-center gap-1.5">
+            <svg width="24" height="8"><line x1="0" y1="4" x2="20" y2="4" stroke="#94a3b8" strokeWidth="1.5" strokeDasharray="3 2" /></svg>
+            mentions ({softCount})
+          </span>
+        )}
+        {independent.length > 0 && (
+          <span className="ml-auto">{independent.length} independent</span>
+        )}
+      </div>
 
-          {/* PR satellite nodes */}
-          {prPositions.map(({ pr, x, y }) => {
-            const score = pr.risk_score ?? 0;
-            const { fill, stroke } = nodeColor(score);
-            const highlighted = highlightedPRNumbers.includes(pr.number);
-            return (
-              <g
-                key={`pr-${pr.number}`}
-                onClick={() => onSelect(pr)}
-                className="cursor-pointer"
-              >
-                <circle
-                  cx={x} cy={y} r={18}
-                  fill={fill}
-                  stroke={highlighted ? "#8b5cf6" : stroke}
-                  strokeWidth={highlighted ? 3 : 1.5}
-                />
-                <text x={x} y={y + 1} textAnchor="middle" dominantBaseline="middle"
-                  fontSize={9} fontFamily="monospace" fill="#374151" fontWeight="600">
-                  #{pr.number}
-                </text>
-                <text x={x} y={y + 11} textAnchor="middle"
-                  fontSize={8} fontFamily="monospace" fill="#6b7280">
-                  {score}
-                </text>
-              </g>
-            );
-          })}
+      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-auto">
+        {graphPRs.length === 0 ? (
+          <div className="flex flex-1 items-center justify-center rounded-xl border border-dashed border-border bg-card/50 p-8 text-center">
+            <div>
+              <p className="text-sm font-medium">No dependencies detected</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                No PR bodies reference another open PR with #N.
+                Try asking the agent to{" "}
+                <span className="font-mono">&quot;find dependent PRs&quot;</span>.
+              </p>
+            </div>
+          </div>
+        ) : (
+          <div className="overflow-auto rounded-xl border border-border bg-card">
+            <svg
+              width={svgW}
+              height={svgH}
+              viewBox={`0 0 ${svgW} ${svgH}`}
+              style={{ display: "block", minWidth: svgW }}
+            >
+              <defs>
+                <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+                  <polygon points="0 0,8 3,0 6" fill="#64748b" />
+                </marker>
+                <marker id="arrowhead-hard" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+                  <polygon points="0 0,8 3,0 6" fill="#475569" />
+                </marker>
+              </defs>
 
-          {/* Author hub nodes */}
-          {groups.map((g, gi) => {
-            const pos = hubPositions[gi];
-            return (
-              <g key={`hub-${g.author}`}>
-                <circle
-                  cx={pos.x} cy={pos.y} r={28}
-                  fill="#f1f5f9" stroke="#94a3b8" strokeWidth={2}
-                />
-                {g.avatar ? (
-                  <image
-                    href={g.avatar}
-                    x={pos.x - 14} y={pos.y - 14}
-                    width={28} height={28}
-                    clipPath={`circle(14px at 14px 14px)`}
-                    style={{ borderRadius: "50%" }}
+              {/* Edges */}
+              {edges.map(({ from, to, kind }) => {
+                const fp = positions.get(from);
+                const tp = positions.get(to);
+                if (!fp || !tp) return null;
+                const isRight = fp.x < tp.x;
+                // Attach to right side if going right, left side if going left
+                const x1 = isRight ? fp.x + NW : fp.x;
+                const y1 = fp.y + NH / 2;
+                const x2 = isRight ? tp.x : tp.x + NW;
+                const y2 = tp.y + NH / 2;
+                const cx = (x1 + x2) / 2;
+                return (
+                  <path
+                    key={`${from}-${to}`}
+                    d={`M ${x1} ${y1} C ${cx} ${y1}, ${cx} ${y2}, ${x2} ${y2}`}
+                    fill="none"
+                    stroke={kind === "hard" ? "#475569" : "#94a3b8"}
+                    strokeWidth={kind === "hard" ? 1.8 : 1.2}
+                    strokeDasharray={kind === "soft" ? "4 3" : undefined}
+                    markerEnd={kind === "hard" ? "url(#arrowhead-hard)" : "url(#arrowhead)"}
                   />
-                ) : (
-                  <text x={pos.x} y={pos.y + 1} textAnchor="middle" dominantBaseline="middle"
-                    fontSize={13} fontFamily="monospace" fill="#64748b" fontWeight="700">
-                    {g.author[0]?.toUpperCase()}
-                  </text>
-                )}
-                <text x={pos.x} y={pos.y + 40} textAnchor="middle"
-                  fontSize={9} fontFamily="monospace" fill="#64748b">
-                  {g.author.length > 12 ? g.author.slice(0, 11) + "…" : g.author}
-                </text>
-                <text x={pos.x} y={pos.y + 50} textAnchor="middle"
-                  fontSize={8} fontFamily="monospace" fill="#94a3b8">
-                  {g.prs.length} PR{g.prs.length !== 1 ? "s" : ""}
-                </text>
-              </g>
-            );
-          })}
-        </svg>
+                );
+              })}
+
+              {/* PR nodes */}
+              {graphPRs.map((pr) => {
+                const pos = positions.get(pr.number);
+                if (!pos) return null;
+                const score = pr.risk_score ?? 0;
+                const { fill, stroke } = nodeRiskStyle(score);
+                const hl = highlightedPRNumbers.includes(pr.number);
+                const title = pr.title.length > 22 ? pr.title.slice(0, 21) + "…" : pr.title;
+                const author = pr.author.length > 18 ? pr.author.slice(0, 17) + "…" : pr.author;
+                return (
+                  <g key={pr.number} onClick={() => onSelect(pr)} style={{ cursor: "pointer" }}>
+                    <rect
+                      x={pos.x} y={pos.y} width={NW} height={NH} rx={8}
+                      fill={fill}
+                      stroke={hl ? "#8b5cf6" : stroke}
+                      strokeWidth={hl ? 2.5 : 1.5}
+                    />
+                    <text x={pos.x + 8} y={pos.y + 17} fontSize={10} fontFamily="monospace" fill="#374151" fontWeight="700">
+                      #{pr.number}
+                      <tspan fill="#6b7280" fontWeight="400" fontSize={9}> · {score}</tspan>
+                    </text>
+                    <text x={pos.x + 8} y={pos.y + 31} fontSize={9} fontFamily="sans-serif" fill="#374151">
+                      {title}
+                    </text>
+                    <text x={pos.x + 8} y={pos.y + 46} fontSize={8} fontFamily="monospace" fill="#94a3b8">
+                      @{author}
+                    </text>
+                  </g>
+                );
+              })}
+            </svg>
+          </div>
+        )}
+
+        {/* Independent PRs — compact chip row */}
+        {independent.length > 0 && (
+          <div>
+            <p className="mb-2 font-mono text-[11px] text-muted-foreground/60">
+              Independent ({independent.length}) — no cross-references detected
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {independent.map((pr) => {
+                const score = pr.risk_score ?? 0;
+                const hl = highlightedPRNumbers.includes(pr.number);
+                return (
+                  <button
+                    key={pr.number}
+                    onClick={() => onSelect(pr)}
+                    className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-left text-xs transition-all hover:shadow-sm ${
+                      hl
+                        ? "border-violet-400 bg-violet-50 ring-1 ring-violet-300"
+                        : "border-border bg-card hover:border-muted"
+                    }`}
+                  >
+                    <span className="font-mono text-[10px] text-muted-foreground">#{pr.number}</span>
+                    <span className="max-w-[140px] truncate font-medium">{pr.title}</span>
+                    <span className={`shrink-0 rounded-full border px-1.5 py-0.5 text-[9px] font-semibold ${riskColor(score)}`}>
+                      {score}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -871,9 +1114,9 @@ function CanvasInner() {
 
   useFrontendTool({
     name: "setView",
-    description: "Switch the canvas view. Values: swipe | risk-matrix | contributor-focus | dependency-graph",
+    description: "Switch the canvas view. Values: swipe | risk-matrix | contributor-focus | dependency-graph | category-group",
     parameters: z.object({
-      view: z.enum(["swipe", "risk-matrix", "contributor-focus", "dependency-graph"]),
+      view: z.enum(["swipe", "risk-matrix", "contributor-focus", "dependency-graph", "category-group"]),
     }),
     handler: async ({ view }) => {
       updateState((prev) => ({ ...prev, view }));
@@ -970,7 +1213,7 @@ function CanvasInner() {
           </div>
           {state.prs.length > 0 && (
             <div className="flex items-center gap-1 rounded-lg border border-border bg-muted/40 p-1">
-              {(["swipe", "risk-matrix", "contributor-focus", "dependency-graph"] as const).map((v) => (
+              {(["swipe", "risk-matrix", "contributor-focus", "dependency-graph", "category-group"] as const).map((v) => (
                 <button
                   key={v}
                   onClick={() => updateState((prev) => ({ ...prev, view: v }))}
@@ -1024,6 +1267,13 @@ function CanvasInner() {
             )}
             {state.view === "dependency-graph" && (
               <DependencyGraphView
+                prs={sortedPRs}
+                highlightedPRNumbers={state.highlightedPRNumbers}
+                onSelect={handleSelect}
+              />
+            )}
+            {state.view === "category-group" && (
+              <CategoryGroupView
                 prs={sortedPRs}
                 highlightedPRNumbers={state.highlightedPRNumbers}
                 onSelect={handleSelect}

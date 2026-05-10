@@ -111,7 +111,7 @@ Last updated: 2026-05-09
   - `"swipe"` — SwiPR-style card stack: 3 visible stacked cards, physics drag (right=approve/green, left=changes/red, down=skip), action buttons with keyboard hints (J/F/space), `isContentEditable` guard so chat input is not interrupted
   - `"risk-matrix"` — three scrollable columns (High ≥70 / Medium 40-69 / Low <40) with color-coded headers and counts
   - `"contributor-focus"` — PRs grouped by author, sorted by PR count, author avatar + handle + count badge
-  - `"dependency-graph"` — SVG bipartite graph: author hubs (circle with avatar) → PR satellites (colored by risk tier), click PR node to open detail panel
+  - `"dependency-graph"` — Real DAG: parses `#N` refs from PR bodies. Solid arrow = explicit keyword (depends on/blocked by/requires). Dashed = bare mention. Sugiyama-style layer layout (no-deps left → dependents right). Independent PRs shown as compact chips below graph.
   - Added manual view tab switcher in the header (pills) so you can switch without the agent
   - All views share `sortedPRs` (risk-desc), `highlightedPRNumbers`, `selectedPR` detail panel
   - Fixed keyboard capture bug: SwipeView now checks `isContentEditable` before consuming arrow/space keys so the chat input works normally
