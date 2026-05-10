@@ -143,6 +143,23 @@ Last updated: 2026-05-09
 
 9. **Priority ranking by age** — rank PRs for review order by how long they have been open (`created_at` ascending — oldest first). Surface as an ordered list the agent can read back.
 
+10. **Release target classification** — classify each PR into a release target category and surface it on the card. Use PR title, labels, and body to determine category:
+
+    | Category | Classification signals |
+    |---|---|
+    | **Feature** | labels: `feature`, `enhancement`, `new`; title prefix: `feat:` |
+    | **Bug Fix** | labels: `bug`, `fix`, `hotfix`; title prefix: `fix:`, `bug:` |
+    | **Maintenance** | labels: `chore`, `refactor`, `deps`, `ci`, `infra`; title prefix: `chore:`, `refactor:` |
+    | **Simple Fix** | labels: `typo`, `docs`, `style`, `trivial`; title prefix: `docs:`, `style:`; <5 lines changed |
+
+    Classification logic (in priority order):
+    1. Explicit label match (most reliable)
+    2. Conventional commit prefix in title (`feat:`, `fix:`, `chore:`, `docs:`)
+    3. Keyword scan of PR title and body
+    4. Fall back to `changed_files` count + diff size heuristic for simple fix
+
+    Agent should call `setView("release-targets")` to group cards by category. Each group shows its release cadence hint: Feature → minor release, Bug Fix → patch release, Maintenance → no release needed, Simple Fix → patch or no release.
+
 ---
 
 ## Env setup
