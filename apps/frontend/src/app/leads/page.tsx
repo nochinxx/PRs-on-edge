@@ -1305,15 +1305,29 @@ function CanvasInner() {
 
 function HomePage() {
   const [threadId, setThreadId] = useState<string | undefined>(undefined);
+  // sessionKey increments every time "New chat" is triggered so the provider
+  // remounts even when threadId was already undefined (common on first load —
+  // CopilotKit auto-creates a thread internally without updating our state).
+  const [sessionKey, setSessionKey] = useState(0);
+
+  const handleThreadChange = useCallback((id: string | undefined) => {
+    if (id === undefined) setSessionKey((k) => k + 1);
+    setThreadId(id);
+  }, []);
+
   return (
     <div className={drawerStyles.layout}>
       <ThreadsDrawer
         agentId="default"
         threadId={threadId}
-        onThreadChange={setThreadId}
+        onThreadChange={handleThreadChange}
       />
       <div className={drawerStyles.mainPanel}>
-        <CopilotChatConfigurationProvider agentId="default" threadId={threadId}>
+        <CopilotChatConfigurationProvider
+          key={threadId ?? sessionKey}
+          agentId="default"
+          threadId={threadId}
+        >
           <CanvasInner />
         </CopilotChatConfigurationProvider>
       </div>
