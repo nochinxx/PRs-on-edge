@@ -137,6 +137,12 @@ Last updated: 2026-05-09
 
 6. **Demo prep** — pre-run `resend/resend-node` to verify end-to-end, record Loom fallback video.
 
+7. **Group PRs by category** — classify PRs by topic (bug fix, feature, chore, docs, security) and group cards accordingly in the risk-matrix view.
+
+8. **PR dependency graph** — detect PRs that depend on each other (shared files, stacked branches, cross-references in PR body) and surface dependency links between cards.
+
+9. **Priority ranking by age** — rank PRs for review order by how long they have been open (`created_at` ascending — oldest first). Surface as an ordered list the agent can read back.
+
 ---
 
 ## Env setup
