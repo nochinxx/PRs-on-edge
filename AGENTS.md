@@ -51,7 +51,7 @@ type AgentState = {
   prs: PR[]                     // loaded from get_open_prs
   repo: { owner, name } | null  // currently loaded repo
   selectedPR: PR | null         // full PR with files array
-  view: "swipe" | "risk-matrix" | "contributor-focus"
+  view: "swipe" | "risk-matrix" | "contributor-focus" | "dependency-graph"
   header: { title, subtitle }
   highlightedPRNumbers: number[]
 }
@@ -108,11 +108,13 @@ Last updated: 2026-05-09
   - Empty state with instructions
 - CopilotKit Intelligence (threads) running via Docker, databases fixed
 - Built three distinct view layouts in `apps/frontend/src/app/leads/page.tsx`:
-  - `"swipe"` — one card at a time, centered, motion drag (left/right), arrow keys + j/k, counter "N of M"
+  - `"swipe"` — SwiPR-style card stack: 3 visible stacked cards, physics drag (right=approve/green, left=changes/red, down=skip), action buttons with keyboard hints (J/F/space), `isContentEditable` guard so chat input is not interrupted
   - `"risk-matrix"` — three scrollable columns (High ≥70 / Medium 40-69 / Low <40) with color-coded headers and counts
   - `"contributor-focus"` — PRs grouped by author, sorted by PR count, author avatar + handle + count badge
+  - `"dependency-graph"` — SVG bipartite graph: author hubs (circle with avatar) → PR satellites (colored by risk tier), click PR node to open detail panel
   - Added manual view tab switcher in the header (pills) so you can switch without the agent
   - All views share `sortedPRs` (risk-desc), `highlightedPRNumbers`, `selectedPR` detail panel
+  - Fixed keyboard capture bug: SwipeView now checks `isContentEditable` before consuming arrow/space keys so the chat input works normally
 
 ### Pending — in priority order
 
@@ -193,6 +195,8 @@ The agent runs at `http://localhost:8133` (LangGraph dev server).
 | Risk score heuristic, not LLM | Fast, deterministic, no extra API call. Good enough for sorting cards. |
 | All three views share same data | Agent calls `get_open_prs` once, `setView` switches layout client-side. No re-fetch on view change. |
 | GITHUB_TOKEN optional | App works unauthenticated (60 req/hr). Token only needed for heavy usage / demo. |
-| `motion` package (not `framer-motion`) for swipe | Starter already had `motion` v12 in package.json. Same API, just the renamed package. |
+| `motion` package (not `framer-motion`) for swipe | Starter already had `motion` v12 in package.json. Same API, just the renamed package. Uses `AnimatePresence`, `useMotionValue`, `useTransform` for the card stack. |
+| SwiPR card design ported, not imported | SwiPR uses its own DB/API shape. Adapted the visual design (stacked cards, green/red drag overlays, action button row) to our `PR` type inline in page.tsx. |
+| Dependency graph uses label+author edges, no file-path data | `get_open_prs` returns file counts but not paths. Graph edges = same author. Risk tier = node color. Good enough for demo without an extra API call. |
 | Manual view tabs in header | Added pill switcher alongside the agent-driven `setView` so you can test layout switching without typing in chat. |
 | `sortedPRs` passed to all three views | Risk-matrix and contributor-focus both benefit from pre-sorted data; contributor groups sort by PR count on top of that. |

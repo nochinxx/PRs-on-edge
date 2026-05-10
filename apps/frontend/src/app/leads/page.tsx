@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { motion } from "motion/react";
+import { motion, AnimatePresence, useMotionValue, useTransform } from "motion/react";
+import type { PanInfo } from "motion/react";
 import { z } from "zod";
 import { Toaster } from "sonner";
 import {
@@ -39,7 +40,7 @@ type AgentState = {
   prs: PR[];
   repo: Repo | null;
   selectedPR: (PR & { files?: unknown[]; additions?: number; deletions?: number }) | null;
-  view: "swipe" | "risk-matrix" | "contributor-focus";
+  view: "swipe" | "risk-matrix" | "contributor-focus" | "dependency-graph";
   header: { title: string; subtitle: string };
   highlightedPRNumbers: number[];
 };
@@ -245,6 +246,154 @@ function PRCardInline({ number, title, author, risk_score }: {
 
 // ── View: Swipe ────────────────────────────────────────────────────────────────
 
+// PRCardSwipe — single draggable card, ported from SwiPR with our PR type
+
+type SwipeAction = "approve" | "changes" | "skip";
+
+function PRCardSwipe({
+  pr,
+  isActive,
+  stackIndex,
+  highlighted,
+  onSwipe,
+  onSelect,
+}: {
+  pr: PR;
+  isActive: boolean;
+  stackIndex: number;
+  highlighted: boolean;
+  onSwipe: (action: SwipeAction) => void;
+  onSelect: (pr: PR) => void;
+}) {
+  const x = useMotionValue(0);
+  const y = useMotionValue(0);
+  const rotate = useTransform(x, [-200, 0, 200], [-12, 0, 12]);
+  const greenOpacity = useTransform(x, [0, 80, 200], [0, 0.15, 0.45]);
+  const redOpacity = useTransform(x, [-200, -80, 0], [0.45, 0.15, 0]);
+
+  const scale = isActive ? 1 : 1 - stackIndex * 0.04;
+  const translateY = isActive ? 0 : -stackIndex * 10;
+  const opacity = isActive ? 1 : stackIndex === 1 ? 0.65 : 0.35;
+
+  const handleDragEnd = (_: unknown, info: PanInfo) => {
+    if (Math.abs(info.velocity.x) > 500 || Math.abs(info.offset.x) > 100) {
+      onSwipe(info.offset.x > 0 ? "approve" : "changes");
+    } else if (info.offset.y > 100 || info.velocity.y > 500) {
+      onSwipe("skip");
+    }
+  };
+
+  const score = pr.risk_score ?? 0;
+
+  return (
+    <motion.div
+      className="absolute inset-0"
+      style={{ scale, y: translateY, opacity, zIndex: 10 - stackIndex }}
+      initial={false}
+    >
+      <motion.div
+        className={`relative h-full w-full overflow-hidden rounded-2xl border bg-card cursor-grab active:cursor-grabbing ${
+          highlighted ? "border-violet-400 ring-2 ring-violet-300" : "border-border"
+        }`}
+        style={{ x, y, rotate }}
+        drag={isActive}
+        dragConstraints={{ left: 0, right: 0, top: 0, bottom: 0 }}
+        dragElastic={0.9}
+        onDragEnd={handleDragEnd}
+        whileDrag={{ boxShadow: "0 20px 40px -10px rgb(0 0 0 / 0.25)" }}
+      >
+        {/* Approve overlay (right drag → green) */}
+        <motion.div
+          className="pointer-events-none absolute inset-0 rounded-2xl bg-gradient-to-l from-green-500 to-transparent"
+          style={{ opacity: greenOpacity }}
+        />
+        {/* Changes overlay (left drag → red) */}
+        <motion.div
+          className="pointer-events-none absolute inset-0 rounded-2xl bg-gradient-to-r from-red-500 to-transparent"
+          style={{ opacity: redOpacity }}
+        />
+
+        <div className="flex h-full flex-col p-6">
+          {/* Top row */}
+          <div className="flex items-center gap-3 font-mono text-sm">
+            <span className="text-foreground">#{pr.number}</span>
+            {pr.draft && (
+              <span className="rounded bg-muted px-2 py-0.5 text-[10px] font-medium uppercase text-muted-foreground">
+                draft
+              </span>
+            )}
+            {pr.updated_at && (
+              <span className="text-muted-foreground">{timeAgo(pr.updated_at)}</span>
+            )}
+            <span className={`ml-auto rounded border px-2 py-0.5 text-[10px] font-semibold ${riskColor(score)}`}>
+              risk {score}
+            </span>
+          </div>
+
+          {/* Author */}
+          <div className="mt-4 flex items-center gap-2">
+            <img
+              src={pr.author_avatar}
+              alt={pr.author}
+              className="size-6 rounded-full"
+              onError={(e) => ((e.target as HTMLImageElement).style.display = "none")}
+            />
+            <span className="font-mono text-sm text-muted-foreground">@{pr.author}</span>
+          </div>
+
+          {/* Title */}
+          <h2 className="mt-3 line-clamp-2 text-[22px] font-medium leading-[1.3] text-card-foreground">
+            {pr.title}
+          </h2>
+
+          {/* Body */}
+          {pr.body && (
+            <p className="mt-2 line-clamp-3 text-sm leading-relaxed text-muted-foreground">
+              {pr.body}
+            </p>
+          )}
+
+          {/* Labels */}
+          {(pr.labels ?? []).length > 0 && (
+            <div className="mt-3 flex flex-wrap gap-1">
+              {(pr.labels ?? []).map((l) => (
+                <span
+                  key={l}
+                  className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground"
+                >
+                  {l}
+                </span>
+              ))}
+            </div>
+          )}
+
+          {/* Footer */}
+          <div className="mt-auto flex items-center gap-4 border-t border-border pt-4 font-mono text-xs text-muted-foreground">
+            {pr.changed_files != null && <span>{pr.changed_files} files changed</span>}
+            <button
+              onClick={(e) => { e.stopPropagation(); onSelect(pr); }}
+              className="ml-auto text-violet-600 hover:underline"
+            >
+              details →
+            </button>
+            {pr.html_url && (
+              <a
+                href={pr.html_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="hover:text-foreground"
+                onClick={(e) => e.stopPropagation()}
+              >
+                GitHub ↗
+              </a>
+            )}
+          </div>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
 function SwipeView({
   prs,
   highlightedPRNumbers,
@@ -256,110 +405,128 @@ function SwipeView({
 }) {
   const [index, setIndex] = useState(0);
 
-  useEffect(() => {
-    setIndex(0);
-  }, [prs.length]);
+  useEffect(() => { setIndex(0); }, [prs.length]);
+
+  const advance = useCallback(
+    (_action: SwipeAction) => {
+      if (index >= prs.length) return;
+      setIndex((i) => i + 1);
+    },
+    [index, prs.length],
+  );
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (["ArrowRight", "ArrowDown", " ", "j"].includes(e.key)) {
-        e.preventDefault();
-        setIndex((i) => Math.min(i + 1, prs.length - 1));
-      } else if (["ArrowLeft", "ArrowUp", "k"].includes(e.key)) {
-        e.preventDefault();
-        setIndex((i) => Math.max(i - 1, 0));
+      // Don't steal keys from the chat input or any input/textarea/contenteditable
+      const t = e.target as HTMLElement;
+      if (
+        t instanceof HTMLInputElement ||
+        t instanceof HTMLTextAreaElement ||
+        t.isContentEditable
+      ) return;
+
+      switch (e.key.toLowerCase()) {
+        case "j":
+        case "arrowright":
+          e.preventDefault();
+          advance("approve");
+          break;
+        case "f":
+        case "arrowleft":
+          e.preventDefault();
+          advance("changes");
+          break;
+        case " ":
+        case "arrowdown":
+          e.preventDefault();
+          advance("skip");
+          break;
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [prs.length]);
+  }, [advance]);
 
-  const safeIndex = Math.min(index, Math.max(0, prs.length - 1));
-  const pr = prs[safeIndex];
-  if (!pr) return null;
-
-  const score = pr.risk_score ?? 0;
-  const highlighted = highlightedPRNumbers.includes(pr.number);
-
-  return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-5 overflow-hidden">
-      <p className="font-mono text-xs text-muted-foreground">
-        {safeIndex + 1} of {prs.length}
-      </p>
-      <motion.div
-        key={pr.number}
-        drag="x"
-        dragConstraints={{ left: 0, right: 0 }}
-        dragElastic={0.15}
-        onDragEnd={(_, info) => {
-          if (info.offset.x < -80 || info.velocity.x < -400) {
-            setIndex((i) => Math.min(i + 1, prs.length - 1));
-          } else if (info.offset.x > 80 || info.velocity.x > 400) {
-            setIndex((i) => Math.max(i - 1, 0));
-          }
-        }}
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.15, ease: "easeOut" }}
-        className={`w-full max-w-lg cursor-grab rounded-2xl border bg-card p-6 shadow-lg active:cursor-grabbing ${
-          highlighted ? "border-violet-400 ring-1 ring-violet-300" : "border-border"
-        }`}
-      >
-        <div className="mb-3 flex items-start justify-between gap-2">
-          <span className="font-mono text-xs text-muted-foreground">#{pr.number}</span>
-          <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${riskColor(score)}`}>
-            risk {score}
-          </span>
-        </div>
-        <h2 className="mb-3 text-lg font-semibold leading-snug">{pr.title}</h2>
-        {pr.body && (
-          <p className="mb-4 line-clamp-3 text-sm leading-relaxed text-muted-foreground">
-            {pr.body}
-          </p>
-        )}
-        <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-          <img
-            src={pr.author_avatar}
-            alt={pr.author}
-            className="size-5 rounded-full"
-            onError={(e) => ((e.target as HTMLImageElement).style.display = "none")}
-          />
-          <span className="font-medium text-foreground">{pr.author}</span>
-          {pr.draft && <span className="rounded bg-muted px-1 py-0.5 text-[10px]">draft</span>}
-          {pr.changed_files != null && <span>{pr.changed_files} files</span>}
-          {pr.updated_at && <span>{timeAgo(pr.updated_at)}</span>}
-        </div>
-        {(pr.labels ?? []).length > 0 && (
-          <div className="mb-4 flex flex-wrap gap-1">
-            {(pr.labels ?? []).map((l) => (
-              <span key={l} className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">
-                {l}
-              </span>
-            ))}
-          </div>
-        )}
-        <button onClick={() => onSelect(pr)} className="text-xs text-violet-600 hover:underline">
-          View details →
-        </button>
-      </motion.div>
-
-      <div className="flex gap-3">
+  if (index >= prs.length && prs.length > 0) {
+    return (
+      <div className="flex flex-1 flex-col items-center justify-center gap-4">
+        <p className="text-lg font-semibold">All caught up</p>
+        <p className="text-sm text-muted-foreground">Reviewed {prs.length} PRs</p>
         <button
-          onClick={() => setIndex((i) => Math.max(i - 1, 0))}
-          disabled={safeIndex === 0}
-          className="rounded-lg border border-border bg-card px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-30"
+          onClick={() => setIndex(0)}
+          className="rounded-lg border border-border bg-card px-4 py-2 text-sm font-medium hover:bg-muted"
         >
-          ← Prev
-        </button>
-        <button
-          onClick={() => setIndex((i) => Math.min(i + 1, prs.length - 1))}
-          disabled={safeIndex === prs.length - 1}
-          className="rounded-lg border border-border bg-card px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-30"
-        >
-          Next →
+          Start over
         </button>
       </div>
-      <p className="text-[11px] text-muted-foreground/50">drag or use arrow keys to navigate</p>
+    );
+  }
+
+  const visiblePRs = prs.slice(index, index + 3);
+
+  return (
+    <div className="flex flex-1 flex-col items-center gap-4 overflow-hidden">
+      <p className="font-mono text-xs text-muted-foreground">
+        {Math.min(index + 1, prs.length)} of {prs.length}
+      </p>
+
+      {/* Stacked cards */}
+      <div className="relative h-[500px] w-full max-w-lg lg:h-[560px]">
+        <AnimatePresence mode="popLayout">
+          {visiblePRs.map((pr, i) => (
+            <motion.div
+              key={pr.number}
+              className="absolute inset-0"
+              initial={{ opacity: 0, scale: 0.9, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.88, transition: { duration: 0.25, type: "spring", stiffness: 300, damping: 30 } }}
+            >
+              <PRCardSwipe
+                pr={pr}
+                isActive={i === 0}
+                stackIndex={i}
+                highlighted={highlightedPRNumbers.includes(pr.number)}
+                onSwipe={advance}
+                onSelect={onSelect}
+              />
+            </motion.div>
+          ))}
+        </AnimatePresence>
+      </div>
+
+      {/* Action buttons — SwiPR style */}
+      <div className="grid w-full max-w-lg grid-cols-3 gap-3">
+        <button
+          onClick={() => advance("changes")}
+          className="group flex h-12 items-center justify-center gap-2 rounded-lg border-2 border-red-600 bg-card font-mono text-sm font-medium text-red-600 transition-colors hover:bg-red-600/10"
+        >
+          <span>✕</span>
+          <span>Changes</span>
+          <span className="ml-1 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100">
+            F
+          </span>
+        </button>
+        <button
+          onClick={() => advance("skip")}
+          className="group flex h-12 items-center justify-center gap-2 rounded-lg border-2 border-border bg-card font-mono text-sm font-medium text-muted-foreground transition-colors hover:bg-muted"
+        >
+          <span>↓</span>
+          <span>Skip</span>
+          <span className="ml-1 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100">
+            space
+          </span>
+        </button>
+        <button
+          onClick={() => advance("approve")}
+          className="group flex h-12 items-center justify-center gap-2 rounded-lg border-2 border-green-500 bg-card font-mono text-sm font-medium text-green-600 transition-colors hover:bg-green-500/10"
+        >
+          <span>✓</span>
+          <span>Approve</span>
+          <span className="ml-1 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100">
+            J
+          </span>
+        </button>
+      </div>
     </div>
   );
 }
@@ -488,6 +655,161 @@ function ContributorFocusView({
   );
 }
 
+// ── View: Dependency Graph ────────────────────────────────────────────────────
+// Bipartite SVG: author hubs (large circles) → PR satellites (small circles).
+// Edges = same-author ownership. Node color = risk tier.
+
+function DependencyGraphView({
+  prs,
+  highlightedPRNumbers,
+  onSelect,
+}: {
+  prs: PR[];
+  highlightedPRNumbers: number[];
+  onSelect: (pr: PR) => void;
+}) {
+  const W = 700;
+  const H = 520;
+
+  const groups = useMemo(() => {
+    const map = new Map<string, { author: string; avatar?: string; prs: PR[] }>();
+    for (const pr of prs) {
+      if (!map.has(pr.author)) {
+        map.set(pr.author, { author: pr.author, avatar: pr.author_avatar, prs: [] });
+      }
+      map.get(pr.author)!.prs.push(pr);
+    }
+    return [...map.values()].sort((a, b) => b.prs.length - a.prs.length);
+  }, [prs]);
+
+  // Position author hubs evenly around a center ellipse
+  const hubPositions = groups.map((g, i) => {
+    const angle = (i / groups.length) * 2 * Math.PI - Math.PI / 2;
+    return {
+      author: g.author,
+      x: W / 2 + (W * 0.32) * Math.cos(angle),
+      y: H / 2 + (H * 0.34) * Math.sin(angle),
+    };
+  });
+
+  // Position each PR satellite around its hub
+  const prPositions: { pr: PR; x: number; y: number }[] = [];
+  groups.forEach((g, gi) => {
+    const hub = hubPositions[gi];
+    g.prs.forEach((pr, pi) => {
+      const spread = Math.min(g.prs.length, 6);
+      const angle = (pi / spread) * 2 * Math.PI - Math.PI / 2;
+      const r = 60 + Math.min(g.prs.length, 4) * 8;
+      prPositions.push({
+        pr,
+        x: hub.x + r * Math.cos(angle),
+        y: hub.y + r * Math.sin(angle),
+      });
+    });
+  });
+
+  const hubMap = new Map(hubPositions.map((h) => [h.author, h]));
+
+  function nodeColor(score: number) {
+    if (score >= 70) return { fill: "#fecaca", stroke: "#dc2626" };
+    if (score >= 40) return { fill: "#fef3c7", stroke: "#d97706" };
+    return { fill: "#dcfce7", stroke: "#16a34a" };
+  }
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-hidden">
+      <p className="shrink-0 font-mono text-[11px] text-muted-foreground/60">
+        Author → PR graph · node color = risk · click a PR to inspect
+      </p>
+      <div className="flex-1 overflow-auto rounded-xl border border-border bg-card">
+        <svg
+          viewBox={`0 0 ${W} ${H}`}
+          width="100%"
+          style={{ minHeight: 360 }}
+          className="block"
+        >
+          {/* Edges: hub → satellite */}
+          {prPositions.map(({ pr, x, y }) => {
+            const hub = hubMap.get(pr.author);
+            if (!hub) return null;
+            return (
+              <line
+                key={`edge-${pr.number}`}
+                x1={hub.x} y1={hub.y} x2={x} y2={y}
+                stroke="#e2e8f0" strokeWidth={1.5}
+              />
+            );
+          })}
+
+          {/* PR satellite nodes */}
+          {prPositions.map(({ pr, x, y }) => {
+            const score = pr.risk_score ?? 0;
+            const { fill, stroke } = nodeColor(score);
+            const highlighted = highlightedPRNumbers.includes(pr.number);
+            return (
+              <g
+                key={`pr-${pr.number}`}
+                onClick={() => onSelect(pr)}
+                className="cursor-pointer"
+              >
+                <circle
+                  cx={x} cy={y} r={18}
+                  fill={fill}
+                  stroke={highlighted ? "#8b5cf6" : stroke}
+                  strokeWidth={highlighted ? 3 : 1.5}
+                />
+                <text x={x} y={y + 1} textAnchor="middle" dominantBaseline="middle"
+                  fontSize={9} fontFamily="monospace" fill="#374151" fontWeight="600">
+                  #{pr.number}
+                </text>
+                <text x={x} y={y + 11} textAnchor="middle"
+                  fontSize={8} fontFamily="monospace" fill="#6b7280">
+                  {score}
+                </text>
+              </g>
+            );
+          })}
+
+          {/* Author hub nodes */}
+          {groups.map((g, gi) => {
+            const pos = hubPositions[gi];
+            return (
+              <g key={`hub-${g.author}`}>
+                <circle
+                  cx={pos.x} cy={pos.y} r={28}
+                  fill="#f1f5f9" stroke="#94a3b8" strokeWidth={2}
+                />
+                {g.avatar ? (
+                  <image
+                    href={g.avatar}
+                    x={pos.x - 14} y={pos.y - 14}
+                    width={28} height={28}
+                    clipPath={`circle(14px at 14px 14px)`}
+                    style={{ borderRadius: "50%" }}
+                  />
+                ) : (
+                  <text x={pos.x} y={pos.y + 1} textAnchor="middle" dominantBaseline="middle"
+                    fontSize={13} fontFamily="monospace" fill="#64748b" fontWeight="700">
+                    {g.author[0]?.toUpperCase()}
+                  </text>
+                )}
+                <text x={pos.x} y={pos.y + 40} textAnchor="middle"
+                  fontSize={9} fontFamily="monospace" fill="#64748b">
+                  {g.author.length > 12 ? g.author.slice(0, 11) + "…" : g.author}
+                </text>
+                <text x={pos.x} y={pos.y + 50} textAnchor="middle"
+                  fontSize={8} fontFamily="monospace" fill="#94a3b8">
+                  {g.prs.length} PR{g.prs.length !== 1 ? "s" : ""}
+                </text>
+              </g>
+            );
+          })}
+        </svg>
+      </div>
+    </div>
+  );
+}
+
 // ── Main canvas ────────────────────────────────────────────────────────────
 
 function CanvasInner() {
@@ -549,9 +871,9 @@ function CanvasInner() {
 
   useFrontendTool({
     name: "setView",
-    description: "Switch the canvas view. Values: swipe | risk-matrix | contributor-focus",
+    description: "Switch the canvas view. Values: swipe | risk-matrix | contributor-focus | dependency-graph",
     parameters: z.object({
-      view: z.enum(["swipe", "risk-matrix", "contributor-focus"]),
+      view: z.enum(["swipe", "risk-matrix", "contributor-focus", "dependency-graph"]),
     }),
     handler: async ({ view }) => {
       updateState((prev) => ({ ...prev, view }));
@@ -648,7 +970,7 @@ function CanvasInner() {
           </div>
           {state.prs.length > 0 && (
             <div className="flex items-center gap-1 rounded-lg border border-border bg-muted/40 p-1">
-              {(["swipe", "risk-matrix", "contributor-focus"] as const).map((v) => (
+              {(["swipe", "risk-matrix", "contributor-focus", "dependency-graph"] as const).map((v) => (
                 <button
                   key={v}
                   onClick={() => updateState((prev) => ({ ...prev, view: v }))}
@@ -695,6 +1017,13 @@ function CanvasInner() {
             )}
             {state.view === "contributor-focus" && (
               <ContributorFocusView
+                prs={sortedPRs}
+                highlightedPRNumbers={state.highlightedPRNumbers}
+                onSelect={handleSelect}
+              />
+            )}
+            {state.view === "dependency-graph" && (
+              <DependencyGraphView
                 prs={sortedPRs}
                 highlightedPRNumbers={state.highlightedPRNumbers}
                 onSelect={handleSelect}
