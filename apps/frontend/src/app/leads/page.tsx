@@ -26,6 +26,8 @@ type PR = {
   author_avatar?: string;
   body?: string;
   changed_files?: number;
+  additions?: number;
+  deletions?: number;
   created_at?: string;
   updated_at?: string;
   labels?: string[];
@@ -331,7 +333,7 @@ function PRCardSwipe({
           </div>
 
           {/* Author */}
-          <div className="mt-4 flex items-center gap-2">
+          <div className="mt-3 flex items-center gap-2">
             <img
               src={pr.author_avatar}
               alt={pr.author}
@@ -342,20 +344,48 @@ function PRCardSwipe({
           </div>
 
           {/* Title */}
-          <h2 className="mt-3 line-clamp-2 text-[22px] font-medium leading-[1.3] text-card-foreground">
+          <h2 className="mt-3 line-clamp-2 text-[20px] font-medium leading-[1.3] text-card-foreground">
             {pr.title}
           </h2>
 
           {/* Body */}
           {pr.body && (
-            <p className="mt-2 line-clamp-3 text-sm leading-relaxed text-muted-foreground">
+            <p className="mt-2 line-clamp-2 text-sm leading-relaxed text-muted-foreground">
               {pr.body}
             </p>
           )}
 
+          {/* Diff stats */}
+          {(pr.changed_files != null || pr.additions != null) && (
+            <div className="mt-3 rounded-lg bg-secondary/60 px-3 py-2">
+              <div className="mb-1.5 flex items-center gap-3 font-mono text-xs">
+                {pr.changed_files != null && (
+                  <span className="text-muted-foreground">{pr.changed_files} files</span>
+                )}
+                {pr.additions != null && (
+                  <span className="text-green-600">+{pr.additions}</span>
+                )}
+                {pr.deletions != null && (
+                  <span className="text-red-500">-{pr.deletions}</span>
+                )}
+              </div>
+              {/* Visual diff bar */}
+              {pr.additions != null && pr.deletions != null && (pr.additions + pr.deletions) > 0 && (() => {
+                const total = pr.additions + pr.deletions;
+                const addPct = Math.round((pr.additions / total) * 100);
+                return (
+                  <div className="flex h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                    <div className="bg-green-500" style={{ width: `${addPct}%` }} />
+                    <div className="bg-red-400 flex-1" />
+                  </div>
+                );
+              })()}
+            </div>
+          )}
+
           {/* Labels */}
           {(pr.labels ?? []).length > 0 && (
-            <div className="mt-3 flex flex-wrap gap-1">
+            <div className="mt-2 flex flex-wrap gap-1">
               {(pr.labels ?? []).map((l) => (
                 <span
                   key={l}
@@ -368,11 +398,10 @@ function PRCardSwipe({
           )}
 
           {/* Footer */}
-          <div className="mt-auto flex items-center gap-4 border-t border-border pt-4 font-mono text-xs text-muted-foreground">
-            {pr.changed_files != null && <span>{pr.changed_files} files changed</span>}
+          <div className="mt-auto flex items-center gap-3 border-t border-border pt-3 font-mono text-xs text-muted-foreground">
             <button
               onClick={(e) => { e.stopPropagation(); onSelect(pr); }}
-              className="ml-auto text-violet-600 hover:underline"
+              className="text-violet-600 hover:underline"
             >
               details →
             </button>

@@ -38,6 +38,7 @@ class PRCanvasState(AgentState):
     selectedPR: NotRequired[Annotated[Optional[dict], _replace]]
     view: NotRequired[Annotated[str, _replace]]
     header: NotRequired[Annotated[_Header, _replace]]
+    highlightedPRNumbers: NotRequired[Annotated[list, _replace]]
 
 
 class PRStateMiddleware(AgentMiddleware[PRCanvasState, Any]):  # type: ignore[type-arg]

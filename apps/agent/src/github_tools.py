@@ -74,6 +74,8 @@ def _slim_pr(pr: Dict[str, Any]) -> Dict[str, Any]:
         "author_avatar": pr["user"]["avatar_url"],
         "body": (pr.get("body") or "")[:400],
         "changed_files": pr.get("changed_files", 0),
+        "additions": pr.get("additions", 0),
+        "deletions": pr.get("deletions", 0),
         "created_at": pr["created_at"],
         "updated_at": pr["updated_at"],
         "labels": [l["name"] for l in (pr.get("labels") or [])],
@@ -115,18 +117,39 @@ def get_open_prs(
         risky_count = sum(1 for p in prs if p["risk_score"] >= 60)
         draft_count = sum(1 for p in prs if p["draft"])
 
+        # Auto-select view — same logic as frontend, computed here so it fires
+        # reliably without depending on the LLM following a multi-step sequence.
+        author_counts: Dict[str, int] = {}
+        for p in prs:
+            author_counts[p["author"]] = author_counts.get(p["author"], 0) + 1
+        top_author_pct = max(author_counts.values(), default=0) / max(len(prs), 1)
+
+        if risky_count >= 3:
+            view = "risk-matrix"
+        elif len(prs) > 0 and top_author_pct >= 0.4:
+            view = "contributor-focus"
+        else:
+            view = "swipe"
+
+        # Auto-highlight high-risk PRs so the agent doesn't need a separate call
+        highlighted = [p["number"] for p in prs if p["risk_score"] >= 60]
+
         summary = (
             f"Loaded {len(prs)} open PRs from {owner}/{repo}. "
-            f"{risky_count} high-risk (score ≥ 60), {draft_count} drafts."
+            f"{risky_count} high-risk (score ≥ 60), {draft_count} drafts. "
+            f"Showing {view} view."
         )
 
         return Command(
             update={
                 "prs": prs,
                 "repo": {"owner": owner, "name": repo},
+                "view": view,
+                "highlightedPRNumbers": highlighted,
+                "selectedPR": None,
                 "header": {
                     "title": f"{owner}/{repo}",
-                    "subtitle": f"{len(prs)} open PRs · {risky_count} high-risk",
+                    "subtitle": f"{len(prs)} open PRs · {risky_count} high-risk · {view}",
                 },
                 "messages": [ToolMessage(content=summary, tool_call_id=tool_call_id)],
             }
@@ -206,6 +229,8 @@ def get_pr_details(
             f"Risk score: {detail['risk_score']}/100."
         )
 
+        # Setting selectedPR opens the detail panel on the canvas immediately —
+        # no separate selectPR frontend tool call needed.
         return Command(
             update={
                 "selectedPR": detail,
